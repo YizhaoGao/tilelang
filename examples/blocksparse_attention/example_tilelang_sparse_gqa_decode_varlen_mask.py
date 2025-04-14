@@ -12,6 +12,7 @@ import argparse
 import time
 import math
 from heuristic import num_splits_heuristic
+from example_triton_sparse_gqa_decode_varlen_mask import block_sparse_flash_decode_gqa_mask_triton
 
 
 def flashattn(batch, heads, heads_kv, dim, dim_v):
@@ -444,7 +445,8 @@ if __name__ == "__main__":
         ref = ref_program_fa(Q, K, V, block_mask, cache_seqlens, max_cache_seqlen, num_blocks,
                              block_size)
     torch.cuda.synchronize()
-    print("dense time: ", (time.time() - start) / 100 * 1000)
+    # print("dense time: ", (time.time() - start) / 100 * 1000)
+    dense_time = (time.time() - start) / 100 * 1000
 
     for _ in range(10):
         # out = sparse_gqa_decode_varlen_mask(Q, K, V, block_mask, cache_seqlens, block_size)
@@ -456,4 +458,47 @@ if __name__ == "__main__":
         # out = sparse_gqa_decode_varlen_mask(Q, K, V, block_mask, cache_seqlens, block_size)
         out = model(Q, K, V, block_mask, cache_seqlens)
     torch.cuda.synchronize()
-    print("sparse time: ", (time.time() - start) / 100 * 1000)
+    # print("sparse time: ", (time.time() - start) / 100 * 1000)
+    tilelang_time = (time.time() - start) / 100 * 1000
+
+
+    for _ in range(10):
+        # out = sparse_gqa_decode_varlen_mask(Q, K, V, block_mask, cache_seqlens, block_size)
+        out = block_sparse_flash_decode_gqa_mask_triton(
+            Q,
+            K,
+            V,
+            cache_seqlens,
+            max_cache_seqlen,
+            block_mask,
+            block_size,
+        )  
+        
+    torch.cuda.synchronize()
+    start = time.time()
+    for _ in range(100):
+        # out = sparse_gqa_decode_varlen_mask(Q, K, V, block_mask, cache_seqlens, block_size)
+        out = block_sparse_flash_decode_gqa_mask_triton(
+            Q,
+            K,
+            V,
+            cache_seqlens,
+            max_cache_seqlen,
+            block_mask,
+            block_size,
+        )    
+    torch.cuda.synchronize()
+    # print("sparse time: ", (time.time() - start) / 100 * 1000)
+    triton_time = (time.time() - start) / 100 * 1000
+
+    ## save results to file
+    file_dir = "results"
+    if not os.path.exists(file_dir):
+        os.makedirs(file_dir)
+    file_name = f"{file_dir}/sparse_gqa_decode_varlen_mask.txt"
+    # append the results to the file
+    with open(file_name, "a") as f:
+        f.write(
+            f"batch={batch}, heads={heads}, heads_kv={heads_kv}, max_cache_seqlen={max_cache_seqlen}, dim={dim}, dim_v={dim_v}, block_size={block_size}, "
+            f"dense_time={dense_time:.2f}ms, tilelang_time={tilelang_time:.2f}ms, triton_time={triton_time:.2f}ms\n"
+        )

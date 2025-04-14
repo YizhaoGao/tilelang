@@ -11,7 +11,7 @@ import argparse
 import time
 import math
 from heuristic import num_splits_heuristic
-
+from example_triton_sparse_gqa_decode_varlen_indice import block_sparse_flash_decode_gqa_indice_triton
 
 def flashattn(batch, heads, heads_kv, dim, dim_v):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
@@ -450,7 +450,9 @@ if __name__ == "__main__":
     for i in range(100):
         ref = ref_program_fa(Q, K, V, block_indices, cache_seqlens, max_cache_seqlen, max_num_blocks, block_size)
     torch.cuda.synchronize()
-    print("dense time: ", (time.time() - start) / 100*1000)
+    # print("dense time: ", (time.time() - start) / 100*1000)
+    dense_time = (time.time() - start) / 100*1000
+    print("dense time: ", dense_time)
 
     for i in range(10):
         # out = sparse_gqa_decode_varlen_indice(Q, K, V, block_indices, cache_seqlens, max_cache_seqlen, block_size)
@@ -461,8 +463,52 @@ if __name__ == "__main__":
         # out = sparse_gqa_decode_varlen_indice(Q, K, V, block_indices, cache_seqlens, max_cache_seqlen, block_size)
         out = sparse_kernel(Q, K, V, block_indices, cache_seqlens)
     torch.cuda.synchronize()
-    print("sparse time: ", (time.time() - start) / 100*1000)
+    # print("tilelang sparse time: ", (time.time() - start) / 100*1000)
+    tilelang_time = (time.time() - start) / 100*1000
+    print("tilelang sparse time: ", tilelang_time)
 
 
 
+    for i in range(10):
+        # out = sparse_gqa_decode_varlen_indice(Q, K, V, block_indices, cache_seqlens, max_cache_seqlen, block_size)
+        out = block_sparse_flash_decode_gqa_indice_triton(
+            Q,
+            K,
+            V,
+            cache_seqlens,
+            max_cache_seqlen,
+            max_selected_blocks,
+            block_indices,
+            block_size,
+        )
+    torch.cuda.synchronize()
+    start = time.time()
+    for i in range(100):
+        # out = sparse_gqa_decode_varlen_indice(Q, K, V, block_indices, cache_seqlens, max_cache_seqlen, block_size)
+        out = block_sparse_flash_decode_gqa_indice_triton(
+            Q,
+            K,
+            V,
+            cache_seqlens,
+            max_cache_seqlen,
+            max_selected_blocks,
+            block_indices,
+            block_size,
+        )
+    torch.cuda.synchronize()
+    triton_time = (time.time() - start) / 100*1000
+    print("triton sparse time: ", triton_time)
+    # print("triton sparse time: ", (time.time() - start) / 100*1000)
 
+
+    ## save results to file
+    file_dir = "results"
+    if not os.path.exists(file_dir):
+        os.makedirs(file_dir)
+    file_name = f"{file_dir}/sparse_gqa_decode_varlen_indice.txt"
+    # append the results to the file
+    with open(file_name, "a") as f:
+        f.write(
+            f"batch={batch}, heads={heads}, heads_kv={heads_kv}, max_cache_seqlen={max_cache_seqlen}, dim={dim}, dim_v={dim_v}, block_size={block_size}, "
+            f"dense_time={dense_time:.2f}ms, tilelang_time={tilelang_time:.2f}ms, triton_time={triton_time:.2f}ms\n"
+        )

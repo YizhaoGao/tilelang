@@ -434,10 +434,53 @@ if __name__ == "__main__":
     print("Passed the ref test!")
 
     # Measure performance
+    # torch.cuda.synchronize()
+    # start = time.time()
+    # for _ in range(1000):
+    #     block_sparse_flash_decode_gqa_indice_triton(
+    #         Q,
+    #         K,
+    #         V,
+    #         cache_seqlens,
+    #         max_cache_seqlen,
+    #         max_selected_blocks,
+    #         block_indices,
+    #         block_size,
+    #     )
+    # torch.cuda.synchronize()
+    # end = time.time()
+    # elapsed_time = end - start
+    # avg_time = elapsed_time / 1000
+    # avg_flops = total_flops / avg_time
+    # print(f"Average time: {avg_time:.6f} seconds")
+
+    # # Measure performance of reference implementation
+    # start = time.time()
+    # for _ in range(1000):
+    #     ref_program_fa(Q, K, V, cache_seqlens)
+    # torch.cuda.synchronize()
+    # end = time.time()
+    # elapsed_time_ref = end - start
+    # avg_time_ref = elapsed_time_ref / 1000
+    # avg_flops_ref = total_flops / avg_time_ref
+    # print(f"Average time of ref: {avg_time_ref:.6f} seconds")
+
+    # print(f"Speedup: {avg_time_ref / avg_time:.2f}x")
+
+
+    ## latency reference
+    for i in range(10):
+        ref = ref_program_fa(Q, K, V, cache_seqlens)
     torch.cuda.synchronize()
     start = time.time()
-    for _ in range(1000):
-        block_sparse_flash_decode_gqa_indice_triton(
+    for i in range(100):
+        ref = ref_program_fa(Q, K, V, cache_seqlens)
+    torch.cuda.synchronize()
+    print("dense time: ", (time.time() - start) / 100*1000)
+
+    for i in range(10):
+        # out = sparse_gqa_decode_varlen_indice(Q, K, V, block_indices, cache_seqlens, max_cache_seqlen, block_size)
+        out = block_sparse_flash_decode_gqa_indice_triton(
             Q,
             K,
             V,
@@ -448,21 +491,18 @@ if __name__ == "__main__":
             block_size,
         )
     torch.cuda.synchronize()
-    end = time.time()
-    elapsed_time = end - start
-    avg_time = elapsed_time / 1000
-    avg_flops = total_flops / avg_time
-    print(f"Average time: {avg_time:.6f} seconds")
-
-    # Measure performance of reference implementation
     start = time.time()
-    for _ in range(1000):
-        ref_program_fa(Q, K, V, cache_seqlens)
+    for i in range(100):
+        # out = sparse_gqa_decode_varlen_indice(Q, K, V, block_indices, cache_seqlens, max_cache_seqlen, block_size)
+        out = block_sparse_flash_decode_gqa_indice_triton(
+            Q,
+            K,
+            V,
+            cache_seqlens,
+            max_cache_seqlen,
+            max_selected_blocks,
+            block_indices,
+            block_size,
+        )
     torch.cuda.synchronize()
-    end = time.time()
-    elapsed_time_ref = end - start
-    avg_time_ref = elapsed_time_ref / 1000
-    avg_flops_ref = total_flops / avg_time_ref
-    print(f"Average time of ref: {avg_time_ref:.6f} seconds")
-
-    print(f"Speedup: {avg_time_ref / avg_time:.2f}x")
+    print("sparse time: ", (time.time() - start) / 100*1000)

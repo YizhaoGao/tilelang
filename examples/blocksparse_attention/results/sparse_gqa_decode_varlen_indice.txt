@@ -1,0 +1,9 @@
+batch=8, heads=32, heads_kv=8, max_cache_seqlen=8192, dim=128, dim_v=128, block_size=32, dense_time=0.14ms, tilelang_time=0.06ms, triton_time=0.11ms
+batch=16, heads=32, heads_kv=8, max_cache_seqlen=8192, dim=128, dim_v=128, block_size=32, dense_time=0.17ms, tilelang_time=0.14ms, triton_time=0.13ms
+batch=32, heads=32, heads_kv=8, max_cache_seqlen=8192, dim=128, dim_v=128, block_size=32, dense_time=0.57ms, tilelang_time=0.25ms, triton_time=0.16ms
+batch=8, heads=32, heads_kv=8, max_cache_seqlen=16384, dim=128, dim_v=128, block_size=32, dense_time=0.25ms, tilelang_time=0.10ms, triton_time=0.20ms
+batch=16, heads=32, heads_kv=8, max_cache_seqlen=16384, dim=128, dim_v=128, block_size=32, dense_time=0.32ms, tilelang_time=0.26ms, triton_time=0.23ms
+batch=32, heads=32, heads_kv=8, max_cache_seqlen=16384, dim=128, dim_v=128, block_size=32, dense_time=1.07ms, tilelang_time=0.49ms, triton_time=0.29ms
+batch=8, heads=32, heads_kv=8, max_cache_seqlen=32768, dim=128, dim_v=128, block_size=32, dense_time=0.40ms, tilelang_time=0.18ms, triton_time=0.38ms
+batch=16, heads=32, heads_kv=8, max_cache_seqlen=32768, dim=128, dim_v=128, block_size=32, dense_time=0.90ms, tilelang_time=0.50ms, triton_time=0.46ms
+batch=32, heads=32, heads_kv=8, max_cache_seqlen=32768, dim=128, dim_v=128, block_size=32, dense_time=2.46ms, tilelang_time=0.98ms, triton_time=0.57ms
