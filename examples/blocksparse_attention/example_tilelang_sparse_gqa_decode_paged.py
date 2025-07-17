@@ -68,6 +68,11 @@ def flashattn(batch, heads, heads_kv, dim, dim_v):
                 block_table_idx = T.alloc_local([1], "int32")
                 block_tile_idx = T.alloc_local([1], "int32")
                 physical_block_idx = T.alloc_local([1], "int32")
+                num_activated_blocks = T.alloc_local([1], "int32")
+                blocks_per_split = T.alloc_local([1], "int32")
+                remaining_blocks = T.alloc_local([1], "int32")
+                loop_range = T.alloc_local([1], "int32")
+                start = T.alloc_local([1], "int32")
 
                 bid = bx
                 hid = by
