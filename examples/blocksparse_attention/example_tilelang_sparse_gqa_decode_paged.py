@@ -25,11 +25,11 @@ def flashattn(batch, heads, heads_kv, dim, dim_v):
 
     @tilelang.jit(out_idx=[-1])
     def kernel_func(block_N, block_H, page_block_size, num_split, num_stages, threads, num_pages,
-                    max_num_blocks_per_seq, max_selected_blocks):
+                    max_num_blocks_per_seq, max_sparse_blocks):
         shape_q = [batch, heads, dim]
         shape_k = [num_pages, page_block_size, heads_kv, dim]
         shape_v = [num_pages, page_block_size, heads_kv, dim_v]
-        shape_indices = [batch, heads_kv, max_selected_blocks]
+        shape_indices = [batch, heads_kv, max_sparse_blocks]
         shape_block_table = [batch, max_num_blocks_per_seq]
         shape_o = [batch, heads, dim_v]
         part_shape = [batch, heads, num_split, dim_v]
@@ -45,6 +45,7 @@ def flashattn(batch, heads, heads_kv, dim, dim_v):
                 block_indices: T.Tensor(shape_indices, "int32"),
                 cache_seqlens: T.Tensor([batch], "int32"),
                 block_table: T.Tensor(shape_block_table, "int32"),
+                activated_blocks: T.Tensor([batch], "int32"),
                 glse: T.Tensor([batch, heads, num_split], accum_dtype),
                 Output_partial: T.Tensor(part_shape, accum_dtype),
         ):
@@ -63,6 +64,10 @@ def flashattn(batch, heads, heads_kv, dim, dim_v):
                 scores_sum = T.alloc_fragment([block_H], accum_dtype)
                 logsum = T.alloc_fragment([block_H], accum_dtype)
                 has_valid_block = T.alloc_var("bool")
+                logical_block_idx = T.alloc_local([1], "int32")
+                block_table_idx = T.alloc_local([1], "int32")
+                block_tile_idx = T.alloc_local([1], "int32")
+                physical_block_idx = T.alloc_local([1], "int32")
 
                 bid = bx
                 hid = by
@@ -74,9 +79,9 @@ def flashattn(batch, heads, heads_kv, dim, dim_v):
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                num_blocks = max_selected_blocks
-                blocks_per_split = T.floordiv(num_blocks, num_split)
-                remaining_blocks = T.floormod(num_blocks, num_split)
+                num_activated_blocks = activated_blocks[bid]
+                blocks_per_split = T.floordiv(num_activated_blocks, num_split)
+                remaining_blocks = T.floormod(num_activated_blocks, num_split)
                 loop_range = (blocks_per_split + T.if_then_else(sid < remaining_blocks, 1, 0))
                 start = blocks_per_split * sid + T.min(sid, remaining_blocks)
                 has_valid_block = False
@@ -192,12 +197,13 @@ def flashattn(batch, heads, heads_kv, dim, dim_v):
                 block_indices: T.Tensor(shape_indices, "int32"),
                 cache_seqlens: T.Tensor([batch], "int32"),
                 block_table: T.Tensor(shape_block_table, "int32"),
+                activated_blocks: T.Tensor([batch], "int32"),
                 glse: T.Tensor([batch, heads, num_split], accum_dtype),
                 Output_partial: T.Tensor(part_shape, accum_dtype),
-                Output: T.Tensor(shape_o, dtype),
+                Output: T.Tensor(shape_o, dtype),  
         ):
-            flash_attn_split(Q, K, V, block_indices, cache_seqlens, block_table, glse,
-                             Output_partial)
+            flash_attn_split(Q, K, V, block_indices, cache_seqlens, block_table, 
+                             activated_blocks, glse, Output_partial)
             combine(glse, Output_partial, Output)
 
         return main
@@ -228,25 +234,25 @@ class SparseFlashAttn(torch.nn.Module):
             threads=128,
             num_pages=num_pages,
             max_num_blocks_per_seq=T.symbolic("max_num_blocks_per_seq"),
-            max_selected_blocks=T.symbolic("max_selected_blocks"),
+            max_sparse_blocks=T.symbolic("max_sparse_blocks"),
         )
 
         props = torch.cuda.get_device_properties(torch.device("cuda:0"))
         self.num_sm = props.multi_processor_count
 
-    def forward(self, query, key, value, block_indices, cache_seqlens, block_table):
+    def forward(self, query, key, value, block_indices, cache_seqlens, block_table, activated_blocks):
         batch = self.batch
         heads = self.heads
         heads_kv = self.heads_kv
         dim_v = self.dim_v
         dim = self.dim
         block_size = self.block_N
-        max_selected_blocks = block_indices.shape[-1]
+        max_activate_blocks = activated_blocks.max().item()
 
         # Compute static scheduling parameters
         num_m_blocks = 1 * (heads // heads_kv + self.block_H - 1) // self.block_H
-        num_n_blocks = max_selected_blocks
-        size_one_kv_head = max_selected_blocks * block_size * (dim + dim_v) * 2
+        num_n_blocks = max_activate_blocks
+        size_one_kv_head = max_activate_blocks * block_size * (dim + dim_v) * 2
         total_mblocks = batch * heads_kv * num_m_blocks
 
         num_sm = self.num_sm
@@ -272,6 +278,7 @@ class SparseFlashAttn(torch.nn.Module):
             block_indices,
             cache_seqlens,
             block_table,
+            activated_blocks,
             glse,
             output_partial,
         )
@@ -391,6 +398,9 @@ def main(args):
     block_N = args.block_N
     page_block_size = args.page_block_size
     num_blocks = args.num_pages  # Use num_pages from args
+    assert num_blocks >= batch * max_cache_seqlen // page_block_size, \
+        "num_blocks must be large enough to accommodate all sequences in the batch"
+
 
     # For dense case verification, set sparse_ratio to 0 to select all blocks
     max_selected_blocks = int(math.ceil(max_cache_seqlen / block_N))
@@ -419,6 +429,8 @@ def main(args):
     block_indices = torch.zeros((batch, heads_kv, max_selected_blocks),
                                 dtype=torch.int32,
                                 device='cuda')
+
+    activated_blocks = torch.zeros((batch), dtype=torch.int32, device='cuda')
 
     # Fill block table and block indices and cache
 
@@ -476,6 +488,7 @@ def main(args):
         if sparse_ratio == 0.0:
             # Dense case: select all blocks in reverse order
             selected_blocks = min(num_tile, max_selected_blocks)
+            activated_blocks[seq_idx] = selected_blocks
             for head_idx in range(heads_kv):
                 for i in range(selected_blocks):
                     # Select blocks in reverse order (most recent first)
@@ -487,6 +500,7 @@ def main(args):
             # Fill block_indices for all KV heads
             num_selected = int(num_tile * (1.0 - sparse_ratio))
             num_selected = max(1, min(num_selected, max_selected_blocks))
+            activated_blocks[seq_idx] = num_selected
             all_blocks = list(range(num_tile))
             for head_idx in range(heads_kv):
                 selected_blocks = []
@@ -514,11 +528,13 @@ def main(args):
                 for i in range(len(selected_blocks), max_selected_blocks):
                     block_indices[seq_idx, head_idx, i] = -1
 
+    print("activated_blocks: ", activated_blocks)
+
     # Initialize sparse attention module
     sparse_attn = SparseFlashAttn(batch, heads, heads_kv, dim, dim_v, page_block_size, block_N,
                                   num_blocks)
-    output_sparse = sparse_attn.forward(Q, K_cache, V_cache, block_indices, cache_seqlens,
-                                        block_table)
+    output_sparse = sparse_attn(Q, K_cache, V_cache, block_indices, cache_seqlens,
+                                        block_table, activated_blocks)
 
     output_ref_fa = ref_program_fa(Q, K_cache, V_cache, cache_seqlens, block_table)
 
@@ -546,12 +562,12 @@ def main(args):
 
     # Performance measurement
     for _ in range(10):  # Warm-up
-        sparse_attn.forward(Q, K_cache, V_cache, block_indices, cache_seqlens, block_table)
+        sparse_attn(Q, K_cache, V_cache, block_indices, cache_seqlens, block_table, activated_blocks)
 
     torch.cuda.synchronize()
     start_time = time.time()
     for _ in range(100):  # Run multiple times for averaging
-        sparse_attn.forward(Q, K_cache, V_cache, block_indices, cache_seqlens, block_table)
+        sparse_attn(Q, K_cache, V_cache, block_indices, cache_seqlens, block_table, activated_blocks)
     torch.cuda.synchronize()
     end_time = time.time()
 
@@ -586,6 +602,6 @@ if __name__ == "__main__":
     parser.add_argument('--sparse_ratio', type=float, default=0.0, help='sparse ratio')
     parser.add_argument('--block_N', type=int, default=64, help='block_N')
     parser.add_argument('--page_block_size', type=int, default=256, help='block size of pages')
-    parser.add_argument('--num_pages', type=int, default=1024, help='total number of pages')
+    parser.add_argument('--num_pages', type=int, default=2048, help='total number of pages')
     args = parser.parse_args()
     main(args)
